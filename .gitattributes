@@ -1,0 +1,54 @@
+# Text files
+*.c text
+*.cpp text
+*.h text
+*.json text
+*.md text
+*.py text
+*.rs text
+*.toml text
+*.txt text
+*.yml text
+
+# Scripts
+*.sh text eol=lf
+*.bat text eol=crlf
+
+# Web files
+*.css text
+*.html text
+*.js text
+*.jsx text
+
+# Image files
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.svg text
+
+# Audio files
+*.aac binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+
+# Video files
+*.mp4 binary
+*.webm binary
+
+# Documentation
+*.pdf binary
+*.doc binary
+*.docx binary
+
+# Archives
+*.7z binary
+*.gz binary
+*.tar binary
+*.zip binary
+
+# AI Models
+*.onnx binary
+*.onnx_data binary

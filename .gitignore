@@ -1,0 +1,13 @@
+/target
+
+# AI Models
+*.onnx
+*.onnx_data
+*.onnx.data
+*.model
+
+# Recordings
+*.wav
+
+# Optional Cargo configuration
+.cargo/ 

@@ -1,0 +1,27 @@
+[package]
+name = "voice_recorder"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies.cpal]
+version = "0.17"
+
+[dependencies.iced]
+version = "0.14"
+default-features = false
+features = [
+    "advanced",
+    "crisp",
+    "linux-theme-detection",
+    "tiny-skia",
+    "tokio",
+    "web-colors",
+]
+
+[dependencies.parakeet-rs]
+version = "0.3.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
