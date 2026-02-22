@@ -23,24 +23,24 @@ pub enum TranscriptionCommand {
 /// - a receiver that yields transcribed text fragments in real time
 pub fn spawn_model_thread() -> (
     mpsc::Sender<TranscriptionCommand>,
-    mpsc::Receiver<()>,
+    mpsc::Receiver<Result<(), String>>,
     mpsc::Receiver<String>,
 ) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<TranscriptionCommand>();
-    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let (text_tx, text_rx) = mpsc::channel::<String>();
 
     std::thread::spawn(move || {
         let mut model = match Nemotron::from_pretrained(".", None) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("Failed to load Nemotron streaming model: {e}");
+                let _ = ready_tx.send(Err(format!("Failed to load model: {e}")));
                 return;
             }
         };
 
         // Signal the UI that the model is ready.
-        let _ = ready_tx.send(());
+        let _ = ready_tx.send(Ok(()));
 
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {

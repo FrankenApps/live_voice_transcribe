@@ -1,14 +1,18 @@
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use iced::Length::Fill;
-use iced::alignment::Vertical::Top;
-use iced::alignment::Horizontal::Right;
-use iced::border::Radius;
-use iced::widget::{
-    button, center, column, combo_box, container, pick_list, row, space, stack, text, text_editor,
+use iced::{
+    Border, Center, Color, Element, Font,
+    Length::Fill,
+    Subscription, Task, Theme,
+    alignment::{Horizontal::Right, Vertical::Top},
+    border::Radius,
+    widget::{
+        button, center, column, combo_box, container, pick_list, row, space, stack, text,
+        text_editor,
+    },
+    window,
 };
-use iced::{Border, Center, Element, Font, Subscription, Task, Theme, window};
 
 use crate::audio::AudioManager;
 use crate::model::{AudioInputDevice, TranscriptionCommand, spawn_model_thread};
@@ -19,6 +23,23 @@ mod model;
 mod ui_helpers;
 
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// Snackbar animation constants (each tick = 100 ms).
+/// Maximum clip height used for the slide animation. Must be ≥ the toast's
+/// natural rendered height (padding + text). 70 px is generous for 1–2 lines.
+const SNACKBAR_MAX_HEIGHT: f32 = 70.0;
+/// Ticks spent sliding in (0 → max height).
+const SNACKBAR_ENTER_TICKS: u8 = 7;
+/// Ticks spent sliding out (max height → 0).
+const SNACKBAR_EXIT_TICKS: u8 = 7;
+/// Total lifetime of a snackbar in ticks (enter + visible + exit).
+const SNACKBAR_TICKS: u8 = 64; // 7 enter + 50 visible + 7 exit
+
+/// Smooth-step (ease-in / ease-out) easing curve, t ∈ [0, 1].
+fn smooth_step(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
 pub fn main() -> iced::Result {
     iced::application(
@@ -50,19 +71,38 @@ pub fn main() -> iced::Result {
     .run()
 }
 
+struct ActiveSnackbar {
+    message: String,
+    background: Color,
+    ticks_remaining: u8,
+}
+
+impl ActiveSnackbar {
+    fn new(message: impl Into<String>, background: Color) -> Self {
+        Self {
+            message: message.into(),
+            background,
+            // Start one tick into the enter animation so the first rendered
+            // frame already shows a non-zero height (avoids a blank first frame).
+            ticks_remaining: SNACKBAR_TICKS - 1,
+        }
+    }
+}
+
 struct VoiceRecorder {
     audio_input_devices: combo_box::State<AudioInputDevice>,
     is_recording: bool,
     /// True while the transcription model is loading at startup.
     is_loading: bool,
     spinner_frame: usize,
-    model_ready_receiver: Option<mpsc::Receiver<()>>,
+    model_ready_receiver: Option<mpsc::Receiver<Result<(), String>>>,
     model_sender: mpsc::Sender<TranscriptionCommand>,
     transcription_receiver: mpsc::Receiver<String>,
     editor_content: text_editor::Content,
     selected_audio_input_device: Option<AudioInputDevice>,
     show_settings: bool,
     theme: Theme,
+    snackbar: Option<ActiveSnackbar>,
 }
 
 #[derive(Clone)]
@@ -104,6 +144,7 @@ impl VoiceRecorder {
             selected_audio_input_device: preselected_input_device,
             show_settings: false,
             theme: Theme::Dark,
+            snackbar: None,
         }
     }
 
@@ -144,6 +185,15 @@ impl VoiceRecorder {
                 Task::none()
             }
             Message::CopyToClipboard => {
+                self.snackbar = Some(ActiveSnackbar::new(
+                    "Copied to clipboard.",
+                    Color {
+                        r: 0.1,
+                        g: 0.6,
+                        b: 0.2,
+                        a: 0.75,
+                    },
+                ));
                 iced::clipboard::write(self.editor_content.text())
             }
             Message::EditorAction(action) => {
@@ -160,11 +210,55 @@ impl VoiceRecorder {
                 // Check whether the model has finished loading.
                 if let Some(rx) = &self.model_ready_receiver {
                     match rx.try_recv() {
-                        Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                        Ok(Ok(())) => {
                             self.is_loading = false;
                             self.model_ready_receiver = None;
+                            self.snackbar = Some(ActiveSnackbar::new(
+                                "Model loaded — ready to transcribe.",
+                                Color {
+                                    r: 0.1,
+                                    g: 0.6,
+                                    b: 0.2,
+                                    a: 0.75,
+                                },
+                            ));
+                        }
+                        Ok(Err(e)) => {
+                            self.is_loading = false;
+                            self.model_ready_receiver = None;
+                            self.snackbar = Some(ActiveSnackbar::new(
+                                e,
+                                Color {
+                                    r: 0.75,
+                                    g: 0.15,
+                                    b: 0.15,
+                                    a: 0.75,
+                                },
+                            ));
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            self.is_loading = false;
+                            self.model_ready_receiver = None;
+                            self.snackbar = Some(ActiveSnackbar::new(
+                                "Model thread crashed unexpectedly.",
+                                Color {
+                                    r: 0.75,
+                                    g: 0.15,
+                                    b: 0.15,
+                                    a: 0.75,
+                                },
+                            ));
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                }
+
+                // Auto-dismiss the snackbar after its timer expires.
+                if let Some(ref mut sb) = self.snackbar {
+                    if sb.ticks_remaining == 0 {
+                        self.snackbar = None;
+                    } else {
+                        sb.ticks_remaining -= 1;
                     }
                 }
 
@@ -303,34 +397,64 @@ impl VoiceRecorder {
 
         let page = page.push(editor_area);
 
-        if !self.show_settings {
-            return page.into();
-        }
-
-        let settings = container(
-            column![
-                text("Settings").size(24),
+        let base: Element<Message> = if self.show_settings {
+            let settings = container(
                 column![
+                    text("Settings").size(24),
                     column![
-                        text("Theme").size(12),
-                        pick_list(Theme::ALL, Some(self.theme.clone()), Message::ChangeTheme)
-                            .padding(5),
+                        column![
+                            text("Theme").size(12),
+                            pick_list(Theme::ALL, Some(self.theme.clone()), Message::ChangeTheme)
+                                .padding(5),
+                        ]
+                        .spacing(5),
+                        row![
+                            space::horizontal(),
+                            button(text("Save")).on_press(Message::HideModal),
+                        ]
+                        .width(Fill),
                     ]
-                    .spacing(5),
-                    row![
-                        space::horizontal(),
-                        button(text("Save")).on_press(Message::HideModal),
-                    ]
-                    .width(Fill),
+                    .spacing(10)
                 ]
-                .spacing(10)
-            ]
-            .spacing(10),
-        )
-        .width(300)
-        .padding(10)
-        .style(container::rounded_box);
+                .spacing(10),
+            )
+            .width(300)
+            .padding(10)
+            .style(container::rounded_box);
 
-        modal(page, settings, Message::HideModal)
+            modal(page, settings, Message::HideModal)
+        } else {
+            page.into()
+        };
+
+        if let Some(snackbar) = &self.snackbar {
+            // Compute animated clip height using smooth-step easing.
+            //
+            // Timeline (each step = 1 tick = 100 ms):
+            //   ticks SNACKBAR_TICKS-1 … SNACKBAR_TICKS-SNACKBAR_ENTER_TICKS+1
+            //     → entering  (height 0 → max)
+            //   ticks SNACKBAR_TICKS-SNACKBAR_ENTER_TICKS … SNACKBAR_EXIT_TICKS+1
+            //     → fully visible (height = max)
+            //   ticks SNACKBAR_EXIT_TICKS … 0
+            //     → exiting   (height max → 0)
+            let enter_threshold = SNACKBAR_TICKS - SNACKBAR_ENTER_TICKS;
+            let anim_height = if snackbar.ticks_remaining > enter_threshold {
+                let elapsed = (SNACKBAR_TICKS - snackbar.ticks_remaining) as f32;
+                smooth_step(elapsed / SNACKBAR_ENTER_TICKS as f32) * SNACKBAR_MAX_HEIGHT
+            } else if snackbar.ticks_remaining <= SNACKBAR_EXIT_TICKS {
+                smooth_step(snackbar.ticks_remaining as f32 / SNACKBAR_EXIT_TICKS as f32)
+                    * SNACKBAR_MAX_HEIGHT
+            } else {
+                SNACKBAR_MAX_HEIGHT
+            };
+            ui_helpers::snackbar(
+                base,
+                snackbar.message.clone(),
+                snackbar.background,
+                anim_height,
+            )
+        } else {
+            base
+        }
     }
 }
