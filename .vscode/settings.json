@@ -6,6 +6,7 @@
         "nemotron",
         "Nemotron",
         "onnx",
+        "onnxruntime",
         "pretrained",
         "recv",
         "resampler",
