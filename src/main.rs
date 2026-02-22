@@ -3,11 +3,12 @@ use std::time::Duration;
 
 use iced::Length::Fill;
 use iced::alignment::Vertical::Top;
+use iced::alignment::Horizontal::Right;
 use iced::border::Radius;
 use iced::widget::{
-    button, center, column, combo_box, container, pick_list, row, space, text, text_editor,
+    button, center, column, combo_box, container, pick_list, row, space, stack, text, text_editor,
 };
-use iced::{Border, Center, Element, Font, Subscription, Theme, window};
+use iced::{Border, Center, Element, Font, Subscription, Task, Theme, window};
 
 use crate::audio::AudioManager;
 use crate::model::{AudioInputDevice, TranscriptionCommand, spawn_model_thread};
@@ -68,6 +69,7 @@ struct VoiceRecorder {
 enum Message {
     ChangeTheme(Theme),
     ChooseAudioInputDevice(AudioInputDevice),
+    CopyToClipboard,
     EditorAction(text_editor::Action),
     HideModal,
     ShowModal,
@@ -123,18 +125,32 @@ impl VoiceRecorder {
         }
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ChooseAudioInputDevice(audio_input_device) => {
                 self.selected_audio_input_device = Some(audio_input_device);
+                Task::none()
             }
-            Message::HideModal => self.show_settings = false,
-            Message::ShowModal => self.show_settings = true,
-            Message::ChangeTheme(theme) => self.theme = theme,
+            Message::HideModal => {
+                self.show_settings = false;
+                Task::none()
+            }
+            Message::ShowModal => {
+                self.show_settings = true;
+                Task::none()
+            }
+            Message::ChangeTheme(theme) => {
+                self.theme = theme;
+                Task::none()
+            }
+            Message::CopyToClipboard => {
+                iced::clipboard::write(self.editor_content.text())
+            }
             Message::EditorAction(action) => {
                 if !action.is_edit() {
                     self.editor_content.perform(action);
                 }
+                Task::none()
             }
             Message::Tick => {
                 if self.is_loading {
@@ -160,6 +176,7 @@ impl VoiceRecorder {
                         text_editor::Edit::Paste(Arc::new(text)),
                     ));
                 }
+                Task::none()
             }
             Message::ToggleRecording => {
                 self.is_recording = !self.is_recording;
@@ -174,6 +191,7 @@ impl VoiceRecorder {
                     }
                     let _ = self.model_sender.send(TranscriptionCommand::Flush);
                 }
+                Task::none()
             }
         }
     }
@@ -259,11 +277,31 @@ impl VoiceRecorder {
             page = page.push(label);
         }
 
-        let page = page.push(
+        let copy_button = container(
+            button(
+                text('\u{0e9b8}')
+                    .font(Font::with_name("icomoon"))
+                    .shaping(text::Shaping::Basic)
+                    .size(14),
+            )
+            .style(button::subtle)
+            .padding([3, 6])
+            .on_press(Message::CopyToClipboard),
+        )
+        .align_x(Right)
+        .align_y(Top)
+        .width(Fill)
+        .padding(4);
+
+        let editor_area = stack![
             text_editor(&self.editor_content)
                 .on_action(Message::EditorAction)
                 .height(Fill),
-        );
+            copy_button,
+        ]
+        .height(Fill);
+
+        let page = page.push(editor_area);
 
         if !self.show_settings {
             return page.into();
