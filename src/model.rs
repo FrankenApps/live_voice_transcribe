@@ -104,13 +104,21 @@ impl AudioInputDevice {
 
     /// Starts the audio input stream, sending captured chunks to `model_tx`.
     pub fn start_recording(&mut self, model_tx: mpsc::Sender<TranscriptionCommand>) {
-        let supported_configurations = self.device.supported_input_configs().unwrap_or_else(|_| panic!("Failed to retrieve supported input configurations of device {}",
-                self.name));
+        let supported_configurations = self.device.supported_input_configs().unwrap_or_else(|_| {
+            panic!(
+                "Failed to retrieve supported input configurations of device {}",
+                self.name
+            )
+        });
 
         let config =
             AudioInputDevice::find_16khz_config(supported_configurations).unwrap_or_else(|| {
-                self.device.default_input_config().unwrap_or_else(|_| panic!("Failed to read default audio input configuration of device: {}",
-                        self.name))
+                self.device.default_input_config().unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to read default audio input configuration of device: {}",
+                        self.name
+                    )
+                })
             });
 
         let channels = config.channels();
@@ -147,12 +155,12 @@ impl AudioInputDevice {
         let stream = match fmt {
             cpal::SampleFormat::F32 => build_stream!(f32),
             cpal::SampleFormat::F64 => build_stream!(f64),
-            cpal::SampleFormat::I8  => build_stream!(i8),
+            cpal::SampleFormat::I8 => build_stream!(i8),
             cpal::SampleFormat::I16 => build_stream!(i16),
             cpal::SampleFormat::I24 => build_stream!(I24),
             cpal::SampleFormat::I32 => build_stream!(i32),
             cpal::SampleFormat::I64 => build_stream!(i64),
-            cpal::SampleFormat::U8  => build_stream!(u8),
+            cpal::SampleFormat::U8 => build_stream!(u8),
             cpal::SampleFormat::U16 => build_stream!(u16),
             cpal::SampleFormat::U24 => build_stream!(U24),
             cpal::SampleFormat::U32 => build_stream!(u32),

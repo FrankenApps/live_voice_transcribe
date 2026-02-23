@@ -112,6 +112,7 @@ enum Message {
     CopyToClipboard,
     EditorAction(text_editor::Action),
     HideModal,
+    RefreshAudioDevices,
     ShowModal,
     Tick,
     ToggleRecording,
@@ -174,6 +175,24 @@ impl VoiceRecorder {
             }
             Message::HideModal => {
                 self.show_settings = false;
+                Task::none()
+            }
+            Message::RefreshAudioDevices => {
+                let new_devices = AudioManager::new().find_input_devices();
+                let new_selection = new_devices
+                    .iter()
+                    .find(|d| d.default)
+                    .cloned()
+                    .or_else(|| {
+                        self.selected_audio_input_device
+                            .as_ref()
+                            .and_then(|current| {
+                                new_devices.iter().find(|d| d.name == current.name).cloned()
+                            })
+                    })
+                    .or_else(|| new_devices.first().cloned());
+                self.audio_input_devices = combo_box::State::new(new_devices);
+                self.selected_audio_input_device = new_selection;
                 Task::none()
             }
             Message::ShowModal => {
@@ -335,6 +354,15 @@ impl VoiceRecorder {
             record_button.on_press(Message::ToggleRecording).into()
         };
 
+        let refresh_button: Element<Message> = {
+            let btn = button(text('\u{0e984}')).style(button::subtle);
+            if self.is_recording {
+                btn.into()
+            } else {
+                btn.on_press(Message::RefreshAudioDevices).into()
+            }
+        };
+
         let mut page = column![
             row![
                 space::horizontal(),
@@ -356,6 +384,7 @@ impl VoiceRecorder {
                     self.selected_audio_input_device.as_ref(),
                     Message::ChooseAudioInputDevice
                 ),
+                refresh_button,
             ]
             .align_y(Center)
             .spacing(20)
