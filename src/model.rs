@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use cpal::{
-    Device, SupportedStreamConfig,
+    Device, I24, Sample, SupportedStreamConfig, U24,
     traits::{DeviceTrait, StreamTrait},
 };
 use parakeet_rs::Nemotron;
@@ -113,36 +113,56 @@ impl AudioInputDevice {
                         self.name))
             });
 
-        let mut accumulator: Vec<f32> = Vec::new();
         let channels = config.channels();
         let sample_rate = config.sample_rate();
+        let stream_config: cpal::StreamConfig = config.clone().into();
+        let fmt = config.sample_format();
 
-        let err_fn = move |err| {
-            eprintln!("An error occurred on the audio stream: {err}");
-        };
-
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => self
-                .device
-                .build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _info: &_| {
-                        let mono = AudioInputDevice::to_mono_f32(data, channels);
+        // Builds a typed input stream for the given sample type `$T`, converting
+        // every sample to f32 before passing it into the shared processing pipeline.
+        macro_rules! build_stream {
+            ($T:ty) => {{
+                let mut accumulator: Vec<f32> = Vec::new();
+                let model_tx = model_tx.clone();
+                self.device.build_input_stream(
+                    &stream_config,
+                    move |data: &[$T], _: &_| {
+                        let f32_data: Vec<f32> =
+                            data.iter().map(|&s| f32::from_sample(s)).collect();
+                        let mono = AudioInputDevice::to_mono_f32(&f32_data, channels);
                         let resampled =
                             AudioInputDevice::resample_if_needed(&mono, sample_rate as usize);
-
                         accumulator.extend_from_slice(&resampled);
                         while accumulator.len() >= 8960 {
                             let chunk: Vec<f32> = accumulator.drain(..8960).collect();
                             let _ = model_tx.send(TranscriptionCommand::Chunk(chunk));
                         }
                     },
-                    err_fn,
+                    |err| eprintln!("An error occurred on the audio stream: {err}"),
                     None,
                 )
-                .expect("Failed to initialize stream."),
-            _ => panic!("Unsupported sample format."),
-        };
+            }};
+        }
+
+        let stream = match fmt {
+            cpal::SampleFormat::F32 => build_stream!(f32),
+            cpal::SampleFormat::F64 => build_stream!(f64),
+            cpal::SampleFormat::I8  => build_stream!(i8),
+            cpal::SampleFormat::I16 => build_stream!(i16),
+            cpal::SampleFormat::I24 => build_stream!(I24),
+            cpal::SampleFormat::I32 => build_stream!(i32),
+            cpal::SampleFormat::I64 => build_stream!(i64),
+            cpal::SampleFormat::U8  => build_stream!(u8),
+            cpal::SampleFormat::U16 => build_stream!(u16),
+            cpal::SampleFormat::U24 => build_stream!(U24),
+            cpal::SampleFormat::U32 => build_stream!(u32),
+            cpal::SampleFormat::U64 => build_stream!(u64),
+            fmt => {
+                eprintln!("Unsupported sample format {fmt}: cannot start recording.");
+                return;
+            }
+        }
+        .expect("Failed to initialize stream.");
 
         stream
             .play()
@@ -213,11 +233,28 @@ impl AudioInputDevice {
     fn find_16khz_config(
         supported_configurations: cpal::SupportedInputConfigs,
     ) -> Option<SupportedStreamConfig> {
-        for configuration in supported_configurations {
+        let configs: Vec<_> = supported_configurations.collect();
+
+        // Prefer F32 at 16 kHz — no conversion overhead in the capture pipeline.
+        for configuration in &configs {
             if configuration.max_sample_rate() < 16000 || configuration.min_sample_rate() > 16000 {
                 continue;
             }
+            if configuration.sample_format() == cpal::SampleFormat::F32 {
+                return Some(SupportedStreamConfig::new(
+                    1,
+                    16000,
+                    *configuration.buffer_size(),
+                    cpal::SampleFormat::F32,
+                ));
+            }
+        }
 
+        // Fall back to any format that supports 16 kHz; samples will be converted in software.
+        for configuration in &configs {
+            if configuration.max_sample_rate() < 16000 || configuration.min_sample_rate() > 16000 {
+                continue;
+            }
             return Some(SupportedStreamConfig::new(
                 1,
                 16000,
