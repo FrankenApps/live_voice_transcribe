@@ -1,6 +1,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use iced::widget::text_input;
 use iced::{
     Border, Center, Color, Element, Font,
     Length::Fill,
@@ -354,6 +355,24 @@ impl VoiceRecorder {
             record_button.on_press(Message::ToggleRecording).into()
         };
 
+        let device_display = self
+            .selected_audio_input_device
+            .as_ref()
+            .map(|d| d.to_string())
+            .unwrap_or_default();
+
+        let audio_device_selector: Element<Message> = if self.is_recording {
+            text_input("Choose audio input device...", &device_display).into()
+        } else {
+            combo_box(
+                &self.audio_input_devices,
+                "Choose audio input device...",
+                self.selected_audio_input_device.as_ref(),
+                Message::ChooseAudioInputDevice,
+            )
+            .into()
+        };
+
         let refresh_button: Element<Message> = {
             let btn = button(text('\u{0e984}')).style(button::subtle);
             if self.is_recording {
@@ -378,12 +397,7 @@ impl VoiceRecorder {
             .width(Fill),
             row![
                 text("Audio Input Device:"),
-                combo_box(
-                    &self.audio_input_devices,
-                    "Choose audio input device...",
-                    self.selected_audio_input_device.as_ref(),
-                    Message::ChooseAudioInputDevice
-                ),
+                audio_device_selector,
                 refresh_button,
             ]
             .align_y(Center)
