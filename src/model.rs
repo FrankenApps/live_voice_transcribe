@@ -271,6 +271,33 @@ impl AudioInputDevice {
             ));
         }
 
-        None
+        // 16 kHz is not in any supported range.  Pick the config whose nearest endpoint
+        // is closest to 16 kHz and use that rate; the capture pipeline will resample in software.
+        fn dist(min: u32, max: u32) -> u32 {
+            if min > 16000 { min - 16000 } else { 16000 - max }
+        }
+
+        let best = configs
+            .iter()
+            .filter(|c| c.sample_format() == cpal::SampleFormat::F32)
+            .min_by_key(|c| dist(c.min_sample_rate(), c.max_sample_rate()))
+            .or_else(|| {
+                configs
+                    .iter()
+                    .min_by_key(|c| dist(c.min_sample_rate(), c.max_sample_rate()))
+            })?;
+
+        let rate = if best.min_sample_rate() > 16000 {
+            best.min_sample_rate()
+        } else {
+            best.max_sample_rate()
+        };
+
+        Some(SupportedStreamConfig::new(
+            1,
+            rate,
+            *best.buffer_size(),
+            best.sample_format(),
+        ))
     }
 }
