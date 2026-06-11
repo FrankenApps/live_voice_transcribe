@@ -244,9 +244,8 @@ impl VoiceRecorder {
                 iced::clipboard::write(self.editor_content.text())
             }
             Message::EditorAction(action) => {
-                if !action.is_edit() {
-                    self.editor_content.perform(action);
-                }
+                self.editor_content.perform(action);
+
                 Task::none()
             }
             Message::Tick => {
@@ -450,6 +449,21 @@ impl VoiceRecorder {
         let page = page.push(editor_area);
 
         let base: Element<Message> = if self.show_settings {
+            // The language cannot be switched while a recording is running.
+            let language_display = self.model_language.to_string();
+            let language_selector: Element<Message> = if self.is_recording {
+                text_input("", &language_display).padding(5).into()
+            } else {
+                pick_list(
+                    Language::ALL,
+                    Some(self.model_language),
+                    Message::ChangeLanguage,
+                )
+                .padding(5)
+                .width(Fill)
+                .into()
+            };
+
             let settings = container(
                 column![
                     text("Settings").size(24),
@@ -457,14 +471,10 @@ impl VoiceRecorder {
                         column![
                             text("Theme").size(12),
                             pick_list(Theme::ALL, Some(self.theme.clone()), Message::ChangeTheme)
-                                .padding(5),
+                                .padding(5)
+                                .width(Fill),
                             text("Language").size(12),
-                            pick_list(
-                                Language::ALL,
-                                Some(self.model_language),
-                                Message::ChangeLanguage
-                            )
-                            .padding(5),
+                            language_selector,
                         ]
                         .spacing(5),
                         row![
@@ -477,7 +487,7 @@ impl VoiceRecorder {
                 ]
                 .spacing(10),
             )
-            .width(300)
+            .width(250)
             .padding(10)
             .style(container::rounded_box);
 
