@@ -51,21 +51,6 @@ pub fn snackbar<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    /*let bg_color = match kind {
-        SnackbarKind::Error => Color {
-            r: 0.75,
-            g: 0.15,
-            b: 0.15,
-            a: 0.75,
-        },
-        SnackbarKind::Success => Color {
-            r: 0.1,
-            g: 0.6,
-            b: 0.2,
-            a: 0.75,
-        },
-    };*/
-
     let toast = container(text(message).color(Color::WHITE))
         .padding([8, 14])
         .style(move |_theme| container::Style {

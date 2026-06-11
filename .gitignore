@@ -5,6 +5,7 @@
 *.onnx_data
 *.onnx.data
 *.model
+config.json
 
 # Recordings
 *.wav

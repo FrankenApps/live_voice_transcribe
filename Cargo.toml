@@ -19,7 +19,7 @@ features = [
 ]
 
 [dependencies.parakeet-rs]
-version = "0.3.3"
+version = "0.3.6"
 
 [profile.release]
 codegen-units = 1

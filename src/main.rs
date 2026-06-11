@@ -16,11 +16,13 @@ use iced::{
 };
 
 use crate::audio::AudioManager;
-use crate::model::{AudioInputDevice, TranscriptionCommand, spawn_model_thread};
+use crate::model::{AudioInputDevice, ModelEvent, TranscriptionCommand, spawn_model_thread};
+use crate::types::Language;
 use crate::ui_helpers::modal;
 
 mod audio;
 mod model;
+mod types;
 mod ui_helpers;
 
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -88,6 +90,30 @@ impl ActiveSnackbar {
             ticks_remaining: SNACKBAR_TICKS - 1,
         }
     }
+
+    fn success(message: impl Into<String>) -> Self {
+        Self::new(
+            message,
+            Color {
+                r: 0.1,
+                g: 0.6,
+                b: 0.2,
+                a: 0.75,
+            },
+        )
+    }
+
+    fn error(message: impl Into<String>) -> Self {
+        Self::new(
+            message,
+            Color {
+                r: 0.75,
+                g: 0.15,
+                b: 0.15,
+                a: 0.75,
+            },
+        )
+    }
 }
 
 struct VoiceRecorder {
@@ -96,9 +122,9 @@ struct VoiceRecorder {
     /// True while the transcription model is loading at startup.
     is_loading: bool,
     spinner_frame: usize,
-    model_ready_receiver: Option<mpsc::Receiver<Result<(), String>>>,
+    model_language: Language,
+    model_events: mpsc::Receiver<ModelEvent>,
     model_sender: mpsc::Sender<TranscriptionCommand>,
-    transcription_receiver: mpsc::Receiver<String>,
     editor_content: text_editor::Content,
     selected_audio_input_device: Option<AudioInputDevice>,
     show_settings: bool,
@@ -108,6 +134,7 @@ struct VoiceRecorder {
 
 #[derive(Clone)]
 enum Message {
+    ChangeLanguage(Language),
     ChangeTheme(Theme),
     ChooseAudioInputDevice(AudioInputDevice),
     CopyToClipboard,
@@ -132,16 +159,17 @@ impl VoiceRecorder {
             .find(|device| device.default)
             .or_else(|| audio_input_devices.first().cloned());
 
-        let (model_tx, ready_rx, text_rx) = spawn_model_thread();
+        let model_language = Language::Auto;
+        let (model_tx, event_rx) = spawn_model_thread(model_language);
 
         Self {
             audio_input_devices: combo_box::State::new(audio_input_devices),
             is_recording: false,
             is_loading: true,
             spinner_frame: 0,
-            model_ready_receiver: Some(ready_rx),
+            model_language,
+            model_events: event_rx,
             model_sender: model_tx,
-            transcription_receiver: text_rx,
             editor_content: text_editor::Content::new(),
             selected_audio_input_device: preselected_input_device,
             show_settings: false,
@@ -204,16 +232,15 @@ impl VoiceRecorder {
                 self.theme = theme;
                 Task::none()
             }
+            Message::ChangeLanguage(language) => {
+                self.model_language = language;
+                let _ = self
+                    .model_sender
+                    .send(TranscriptionCommand::SetLanguage(language));
+                Task::none()
+            }
             Message::CopyToClipboard => {
-                self.snackbar = Some(ActiveSnackbar::new(
-                    "Copied to clipboard.",
-                    Color {
-                        r: 0.1,
-                        g: 0.6,
-                        b: 0.2,
-                        a: 0.75,
-                    },
-                ));
+                self.snackbar = Some(ActiveSnackbar::success("Copied to clipboard."));
                 iced::clipboard::write(self.editor_content.text())
             }
             Message::EditorAction(action) => {
@@ -227,49 +254,40 @@ impl VoiceRecorder {
                     self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
                 }
 
-                // Check whether the model has finished loading.
-                if let Some(rx) = &self.model_ready_receiver {
-                    match rx.try_recv() {
-                        Ok(Ok(())) => {
+                // Drain all pending model events.
+                loop {
+                    match self.model_events.try_recv() {
+                        Ok(ModelEvent::Ready(Ok(()))) => {
                             self.is_loading = false;
-                            self.model_ready_receiver = None;
-                            self.snackbar = Some(ActiveSnackbar::new(
+                            self.snackbar = Some(ActiveSnackbar::success(
                                 "Model loaded — ready to transcribe.",
-                                Color {
-                                    r: 0.1,
-                                    g: 0.6,
-                                    b: 0.2,
-                                    a: 0.75,
-                                },
                             ));
                         }
-                        Ok(Err(e)) => {
+                        Ok(ModelEvent::Ready(Err(e))) => {
                             self.is_loading = false;
-                            self.model_ready_receiver = None;
-                            self.snackbar = Some(ActiveSnackbar::new(
-                                e,
-                                Color {
-                                    r: 0.75,
-                                    g: 0.15,
-                                    b: 0.15,
-                                    a: 0.75,
-                                },
+                            self.snackbar = Some(ActiveSnackbar::error(e));
+                        }
+                        Ok(ModelEvent::Error(e)) => {
+                            self.snackbar = Some(ActiveSnackbar::error(e));
+                        }
+                        Ok(ModelEvent::Text(text)) => {
+                            self.editor_content.perform(text_editor::Action::Move(
+                                text_editor::Motion::DocumentEnd,
+                            ));
+                            self.editor_content.perform(text_editor::Action::Edit(
+                                text_editor::Edit::Paste(Arc::new(text)),
                             ));
                         }
                         Err(mpsc::TryRecvError::Disconnected) => {
-                            self.is_loading = false;
-                            self.model_ready_receiver = None;
-                            self.snackbar = Some(ActiveSnackbar::new(
-                                "Model thread crashed unexpectedly.",
-                                Color {
-                                    r: 0.75,
-                                    g: 0.15,
-                                    b: 0.15,
-                                    a: 0.75,
-                                },
-                            ));
+                            if self.is_loading {
+                                self.is_loading = false;
+                                self.snackbar = Some(ActiveSnackbar::error(
+                                    "Model thread crashed unexpectedly.",
+                                ));
+                            }
+                            break;
                         }
-                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Empty) => break,
                     }
                 }
 
@@ -280,15 +298,6 @@ impl VoiceRecorder {
                     } else {
                         sb.ticks_remaining -= 1;
                     }
-                }
-
-                // Drain all pending transcription fragments into the editor.
-                while let Ok(text) = self.transcription_receiver.try_recv() {
-                    self.editor_content
-                        .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-                    self.editor_content.perform(text_editor::Action::Edit(
-                        text_editor::Edit::Paste(Arc::new(text)),
-                    ));
                 }
                 Task::none()
             }
@@ -449,6 +458,13 @@ impl VoiceRecorder {
                             text("Theme").size(12),
                             pick_list(Theme::ALL, Some(self.theme.clone()), Message::ChangeTheme)
                                 .padding(5),
+                            text("Language").size(12),
+                            pick_list(
+                                Language::ALL,
+                                Some(self.model_language),
+                                Message::ChangeLanguage
+                            )
+                            .padding(5),
                         ]
                         .spacing(5),
                         row![

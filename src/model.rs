@@ -5,7 +5,13 @@ use cpal::{
     Device, I24, Sample, SupportedStreamConfig, U24,
     traits::{DeviceTrait, StreamTrait},
 };
-use parakeet_rs::Nemotron;
+use parakeet_rs::{Nemotron, NemotronMode};
+
+use crate::types::Language;
+
+/// Number of 16 kHz samples fed to the model per chunk (560 ms of audio):
+/// the streaming Nemotron encoder consumes 56 mel frames × 160 hop length.
+pub const CHUNK_SAMPLES: usize = 8960;
 
 /// Commands sent to the persistent transcription thread.
 pub enum TranscriptionCommand {
@@ -13,61 +19,98 @@ pub enum TranscriptionCommand {
     Chunk(Vec<f32>),
     /// End-of-recording signal: flushes the model's remaining context.
     Flush,
+    /// Switch the language the model transcribes.
+    SetLanguage(Language),
+}
+
+/// Events emitted by the transcription thread.
+pub enum ModelEvent {
+    /// Fires once when the model has finished loading (or failed to).
+    Ready(Result<(), String>),
+    /// A non-fatal error worth surfacing to the user.
+    Error(String),
+    /// A transcribed text fragment.
+    Text(String),
 }
 
 /// Spawns the persistent transcription thread.
 ///
-/// Returns:
-/// - a sender for audio chunks and flush commands
-/// - a receiver that fires once when the model has finished loading
-/// - a receiver that yields transcribed text fragments in real time
-pub fn spawn_model_thread() -> (
+/// `language` is applied once the model has loaded; switch it later via
+/// [`TranscriptionCommand::SetLanguage`].
+///
+/// Returns a sender for commands and a receiver for model events.
+pub fn spawn_model_thread(
+    language: Language,
+) -> (
     mpsc::Sender<TranscriptionCommand>,
-    mpsc::Receiver<Result<(), String>>,
-    mpsc::Receiver<String>,
+    mpsc::Receiver<ModelEvent>,
 ) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<TranscriptionCommand>();
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-    let (text_tx, text_rx) = mpsc::channel::<String>();
+    let (event_tx, event_rx) = mpsc::channel::<ModelEvent>();
 
     std::thread::spawn(move || {
         let mut model = match Nemotron::from_pretrained(".", None) {
             Ok(m) => m,
             Err(e) => {
-                let _ = ready_tx.send(Err(format!("Failed to load model: {e}")));
+                let _ = event_tx.send(ModelEvent::Ready(Err(format!("Failed to load model: {e}"))));
                 return;
             }
         };
 
+        let set_language = |model: &mut Nemotron, language: Language| match model.mode() {
+            NemotronMode::Multilingual => {
+                if let Err(e) = model.set_target_lang(language.code()) {
+                    let _ =
+                        event_tx.send(ModelEvent::Error(format!("Failed to set language: {e}")));
+                }
+            }
+            NemotronMode::EnglishOnly => {
+                if !matches!(language, Language::Auto | Language::English) {
+                    let _ = event_tx.send(ModelEvent::Error(
+                        "The loaded model only supports English. Download the multilingual \
+                         Nemotron 3.5 model files to transcribe other languages."
+                            .to_string(),
+                    ));
+                }
+            }
+        };
+
+        set_language(&mut model, language);
+
         // Signal the UI that the model is ready.
-        let _ = ready_tx.send(Ok(()));
+        let _ = event_tx.send(ModelEvent::Ready(Ok(())));
 
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 TranscriptionCommand::Chunk(chunk) => match model.transcribe_chunk(&chunk) {
                     Ok(text) if !text.is_empty() => {
-                        let _ = text_tx.send(text);
+                        let _ = event_tx.send(ModelEvent::Text(text));
                     }
                     Ok(_) => {}
                     Err(e) => eprintln!("Transcription error: {e}"),
                 },
                 TranscriptionCommand::Flush => {
+                    let silence = vec![0.0f32; CHUNK_SAMPLES];
                     for _ in 0..3 {
-                        if let Ok(text) = model.transcribe_chunk(&vec![0.0f32; 8960])
+                        if let Ok(text) = model.transcribe_chunk(&silence)
                             && !text.is_empty()
                         {
-                            let _ = text_tx.send(text);
+                            let _ = event_tx.send(ModelEvent::Text(text));
                         }
                     }
                     // Separate recording sessions with a blank line.
-                    let _ = text_tx.send("\n".to_string());
+                    let _ = event_tx.send(ModelEvent::Text("\n".to_string()));
+                    // Start the next session with fresh encoder/decoder state;
+                    // the configured target language is preserved.
+                    model.reset();
                 }
+                TranscriptionCommand::SetLanguage(language) => set_language(&mut model, language),
             }
         }
         // Thread exits only when all senders are dropped (i.e., the application exits).
     });
 
-    (cmd_tx, ready_rx, text_rx)
+    (cmd_tx, event_rx)
 }
 
 /// Represents an audio input device provided by the operating system,
@@ -141,8 +184,8 @@ impl AudioInputDevice {
                         let resampled =
                             AudioInputDevice::resample_if_needed(&mono, sample_rate as usize);
                         accumulator.extend_from_slice(&resampled);
-                        while accumulator.len() >= 8960 {
-                            let chunk: Vec<f32> = accumulator.drain(..8960).collect();
+                        while accumulator.len() >= CHUNK_SAMPLES {
+                            let chunk: Vec<f32> = accumulator.drain(..CHUNK_SAMPLES).collect();
                             let _ = model_tx.send(TranscriptionCommand::Chunk(chunk));
                         }
                     },
