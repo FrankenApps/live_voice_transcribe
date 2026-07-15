@@ -1,5 +1,5 @@
 [package]
-name = "voice_recorder"
+name = "live_voice_transcribe"
 version = "0.1.0"
 edition = "2024"
 
