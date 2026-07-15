@@ -382,7 +382,12 @@ impl VoiceRecorder {
         };
 
         let refresh_button: Element<Message> = {
-            let btn = button(text('\u{0e984}')).style(button::subtle);
+            let btn = button(
+                text('\u{e984}')
+                    .font(Font::with_name("icomoon"))
+                    .shaping(text::Shaping::Basic),
+            )
+            .style(button::subtle);
             if self.is_recording {
                 btn.into()
             } else {
